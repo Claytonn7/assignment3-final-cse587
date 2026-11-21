@@ -137,5 +137,8 @@ class FlashAttention2Pytorch(torch.autograd.Function):
     @staticmethod
     def backward(ctx, do):
         (L, q, k, v, o) = ctx.saved_tensors
-        dq, dk, dv = flash_bwd_recompute_impl(q, k, v, o, do, L, ctx.is_causal)
+        dq, dk, dv = _flash_bwd_compiled(q, k, v, o, do, L, ctx.is_causal)
         return dq, dk, dv, None
+
+# flash_backward: PyTorch backward (Eqs. 13-19) compiled with torch.compile
+_flash_bwd_compiled = torch.compile(flash_bwd_recompute_impl)
