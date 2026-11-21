@@ -3,12 +3,12 @@ import timeit
 import argparse
 import statistics as stats
 from contextlib import nullcontext
-from cs336_basics.transformer_lm import TransformerLM
-from cs336_systems.utils import BenchmarkReporter, BenchmarkRow
+from basics.model import BasicsTransformerLM
+from systems.utils import BenchmarkReporter, BenchmarkRow
 import torch.cuda.nvtx as nvtx
 from contextlib import contextmanager
-from cs336_basics.nn_utils import cross_entropy_from_logits
-from cs336_basics.optimizer import AdamW
+from basics.nn_utils import cross_entropy
+from basics.optimizer import AdamW
 
 # Table 1 defaults
 MODEL_SPECS = {
@@ -58,7 +58,7 @@ def sync_if_cuda(device: torch.device) -> None:
 
 def make_model(args, device: torch.device) -> torch.nn.Module:
     spec = MODEL_SPECS_RTX4060[args.model_size]
-    model = TransformerLM(
+    model = BasicsTransformerLM(
         vocab_size=args.vocab_size,
         context_length=args.context_length,
         d_model=spec["d_model"],
@@ -268,7 +268,7 @@ def run_profile_workload(args, device: torch.device, autocast_ctx):
 
             with nvtx_range("loss", args.nvtx):
                 B, S, V = logits.shape
-                loss = cross_entropy_from_logits(logits.reshape(B * S, V), y.reshape(B * S))
+                loss = cross_entropy(logits.reshape(B * S, V), y.reshape(B * S))
 
             with nvtx_range("backward", args.nvtx):
                 optimizer.zero_grad(set_to_none=True)
@@ -302,7 +302,7 @@ def run_profile_workload(args, device: torch.device, autocast_ctx):
 
                 with nvtx_range("loss", args.nvtx):
                     B, S, V = logits.shape
-                    loss = cross_entropy_from_logits(logits.reshape(B * S, V), y.reshape(B * S))
+                    loss = cross_entropy(logits.reshape(B * S, V), y.reshape(B * S))
 
                 with nvtx_range("backward", args.nvtx):
                     optimizer.zero_grad(set_to_none=True)
@@ -407,7 +407,7 @@ def main():
         )
 
     if args.nvtx_attn:
-        import cs336_basics.modules as m
+        import basics.modules as m
 
         def _patched_sdp_attn(q, k, v, mask=None):
             return m.annotated_scaled_dot_product_attention(q, k, v, mask=mask, nvtx_enabled=True)
@@ -430,7 +430,7 @@ if __name__ == "__main__":
     # ## 1. Problem (benchmarking_script)
     #
     # (b) Forward + backward (measures forward pass time):
-    #   uv run python cs336_systems/benchmark.py \
+    #   uv run python systems/benchmark.py \
     #     --out-jsonl runs/bench.jsonl \
     #     --out-md runs/bench.md \
     #     --write-md \
@@ -452,7 +452,7 @@ if __name__ == "__main__":
     #     --trace=cuda,nvtx \
     #     --sample=none \
     #     --cpuctxsw=none \
-    #     python cs336_systems/benchmark.py \
+    #     python systems/benchmark.py \
     #     --model-size 2.7b --context-length 128 \
     #     --nvtx --profile --profile-mode inference --profile-steps 1
     # 
@@ -463,14 +463,14 @@ if __name__ == "__main__":
     #     --trace=cuda,nvtx \
     #     --sample=none \
     #     --cpuctxsw=none \
-    #     python cs336_systems/benchmark.py \
+    #     python systems/benchmark.py \
     #     --model-size 2.7b --context-length 128 \
     #     --nvtx --profile --profile-mode train_step --profile-steps 1
     #
     # (e) NVTX-annotated attention:
     #   uv run nsys profile -o runs/nsys_e_attn_2p7b_s128 \
     #     --force-overwrite=true --trace=cuda,nvtx --sample=none --cpuctxsw=none \
-    #     python cs336_systems/benchmark.py \
+    #     python systems/benchmark.py \
     #     --model-size 2.7b --context-length 128 \
     #     --nvtx --nvtx-attn
     #     --profile --profile-mode inference --profile-steps 1 --warmup-steps 1
@@ -479,7 +479,7 @@ if __name__ == "__main__":
     # ## 3. Problem (mixed_precision_accumulation)
     # 
     # (c) Mix precision benchmarking:
-    #   uv run python cs336_systems/benchmark.py \
+    #   uv run python systems/benchmark.py \
     #     --out-jsonl runs/bench.jsonl \
     #     --out-md runs/bench.md \
     #     --write-md \
@@ -491,7 +491,7 @@ if __name__ == "__main__":
     # ## 4. Problem (memory_profiling)
     # 
     # (a) Memory profiling with PyTorch memory snapshot:
-    #   uv run python cs336_systems/benchmark.py \
+    #   uv run python systems/benchmark.py \
     #     --model-size 2.7b --context-length 128 \
     #     --profile --profile-mode inference --profile-steps 1 --warmup-steps 5 \
     #     --mem-profile --mem-out runs/mem_2p7b
@@ -500,7 +500,7 @@ if __name__ == "__main__":
     # 5. Problem (torch_compile)
     # 
     # (b) Torch compile:
-    #   uv run python cs336_systems/benchmark.py \
+    #   uv run python systems/benchmark.py \
     #     --out-jsonl runs/bench.jsonl \
     #     --out-md runs/bench.md \
     #     --write-md \

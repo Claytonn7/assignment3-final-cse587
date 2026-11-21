@@ -1,33 +1,15 @@
 #!/usr/bin/env bash
 set -e
-
-MODELS=("small" "medium" "large" "xl" "2.7b")
-CONTEXT_LENGTH=128
-OUT_DIR="runs"
-
-mkdir -p ${OUT_DIR}
-
-echo "== Nsight Systems profiling start =="
-
-for MODEL in "${MODELS[@]}"; do
-  OUT_NAME="nsys_a_${MODEL}_s${CONTEXT_LENGTH}"
-
-  echo ""
-  echo ">>> Profiling model=${MODEL}, context_length=${CONTEXT_LENGTH}"
-  echo ">>> Output: ${OUT_DIR}/${OUT_NAME}.nsys-rep"
-
-  uv run nsys profile \
-    -o ${OUT_DIR}/${OUT_NAME} \
-    --force-overwrite=true \
-    --trace=cuda,nvtx \
-    --sample=none \
-    --cpuctxsw=none \
-    python cs336_systems/benchmark.py \
-      --model-size ${MODEL} \
-      --context-length ${CONTEXT_LENGTH} \
-      --nvtx
-
+MODE=${1:-inference}   # inference | train_step
+OUT_DIR="runs"; mkdir -p "$OUT_DIR"
+for MODEL in small medium; do
+  for CTX in 128 256 512 1024; do
+    OUT="${OUT_DIR}/nsys_${MODE}_${MODEL}_s${CTX}"
+    echo ">>> model=$MODEL ctx=$CTX mode=$MODE -> $OUT.nsys-rep"
+    uv run nsys profile -o "$OUT" --force-overwrite=true \
+      --trace=cuda,nvtx --sample=none --cpuctxsw=none \
+      python systems/benchmark.py --model-size "$MODEL" --context-length "$CTX" \
+        --nvtx --profile --profile-mode "$MODE" --profile-steps 1 \
+      || echo "[failed / OOM] model=$MODEL ctx=$CTX"
+  done
 done
-
-echo ""
-echo "== All profiling finished =="

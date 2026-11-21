@@ -3,8 +3,8 @@ import argparse
 from typing import Callable, Dict, Any
 from pathlib import Path
 
-from cs336_basics.modules import scaled_dot_product_attention
-from cs336_systems.utils import AttentionRow, AttentionBenchmarkReporter
+from basics.model import scaled_dot_product_attention
+from systems.utils import AttentionRow, AttentionBenchmarkReporter
 
 
 def cuda_sync():

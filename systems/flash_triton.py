@@ -3,7 +3,7 @@ import torch
 import triton
 import triton.language as tl
 
-from cs336_systems.flash_pytorch import flash_bwd_recompute_impl
+from systems.flash_pytorch import flash_bwd_recompute_impl
 
 
 @triton.jit
