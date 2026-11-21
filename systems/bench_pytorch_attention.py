@@ -105,6 +105,7 @@ def run_one(
         if do_compile:
             if not hasattr(torch, "compile"):
                 raise RuntimeError("torch.compile is not available in this PyTorch build.")
+            torch._dynamo.reset()
             fn = torch.compile(attn)
         local_vars["fn"] = fn
 
