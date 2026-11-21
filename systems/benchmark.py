@@ -2,6 +2,7 @@ import torch
 import timeit
 import argparse
 import statistics as stats
+from pathlib import Path
 from contextlib import nullcontext
 from basics.model import BasicsTransformerLM
 from systems.utils import BenchmarkReporter, BenchmarkRow
@@ -237,10 +238,13 @@ def run_profile_workload(args, device: torch.device, autocast_ctx):
                 optimizer.step()
 
         sync_if_cuda(device)
-
+    if device.type == "cuda":
+        print(f"[peak memory] {torch.cuda.max_memory_allocated() / 1024**2:.1f} MiB")
     # ---------------------------
     # Memory profiling: start recording AFTER warmup (so warmup noise is excluded)
     # ---------------------------
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
     mem_enabled = bool(getattr(args, "mem_profile", False)) and (device.type == "cuda")
     if mem_enabled:
         torch.cuda.synchronize()
@@ -279,6 +283,7 @@ def run_profile_workload(args, device: torch.device, autocast_ctx):
         torch.cuda.synchronize()
         out_prefix = getattr(args, "mem_out", "runs/memory_snapshot")
         out_path = f"{out_prefix}_{args.profile_mode}_s{args.context_length}.pickle"
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         torch.cuda.memory._dump_snapshot(out_path)
         torch.cuda.memory._record_memory_history(enabled=None)
         print(f"[mem-profile] dumped snapshot: {out_path}")
@@ -367,20 +372,16 @@ def main():
         )
 
     if args.nvtx_attn:
-        import basics.modules as m
-
-        def _patched_sdp_attn(q, k, v, mask=None):
-            return m.annotated_scaled_dot_product_attention(q, k, v, mask=mask, nvtx_enabled=True)
-
-        m.scaled_dot_product_attention = _patched_sdp_attn
-
-    if args.sweep:
-        run_sweep(args, reporter, device, autocast_ctx)
-    else:
-        run_one_setting(args, reporter, device, autocast_ctx)
+        import basics.model
+        from systems.annotated_attention import annotated_scaled_dot_product_attention
+        basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
 
     if args.profile:
         run_profile_workload(args, device, autocast_ctx)
+    elif args.sweep:
+        run_sweep(args, reporter, device, autocast_ctx)
+    else:
+        run_one_setting(args, reporter, device, autocast_ctx)
 
 
 if __name__ == "__main__":
