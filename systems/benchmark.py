@@ -14,18 +14,8 @@ from basics.optimizer import AdamW
 MODEL_SPECS = {
     "small":  dict(d_model=768,  d_ff=3072,  num_layers=12, num_heads=12),
     "medium": dict(d_model=1024, d_ff=4096,  num_layers=24, num_heads=16),
-    "large":  dict(d_model=1280, d_ff=5120,  num_layers=36, num_heads=20),
-    "xl":     dict(d_model=1600, d_ff=6400,  num_layers=48, num_heads=25),
-    "2.7b":   dict(d_model=2560, d_ff=10240, num_layers=32, num_heads=32),
 }
 
-MODEL_SPECS_RTX4060 = {
-    "small":  dict(d_model=384, d_ff=1536, num_layers=6,  num_heads=6),   # 384/6=64
-    "medium": dict(d_model=512, d_ff=2048, num_layers=8,  num_heads=8),   # 512/8=64
-    "large":  dict(d_model=640, d_ff=2560, num_layers=10, num_heads=10),  # 640/10=64
-    "xl":     dict(d_model=768, d_ff=3072, num_layers=12, num_heads=12),  # 768/12=64
-    "2.7b":   dict(d_model=768, d_ff=3072, num_layers=16, num_heads=12),  # 768/12=64
-}
 
 
 @contextmanager
@@ -57,7 +47,7 @@ def sync_if_cuda(device: torch.device) -> None:
 
 
 def make_model(args, device: torch.device) -> torch.nn.Module:
-    spec = MODEL_SPECS_RTX4060[args.model_size]
+    spec = MODEL_SPECS[args.model_size]
     model = BasicsTransformerLM(
         vocab_size=args.vocab_size,
         context_length=args.context_length,
@@ -66,10 +56,6 @@ def make_model(args, device: torch.device) -> torch.nn.Module:
         num_heads=spec["num_heads"],
         d_ff=spec["d_ff"],
         rope_theta=args.rope_theta,
-        max_seq_len=args.context_length,
-        eps=args.rmsnorm_eps,
-        device=device,
-        dtype=torch.float32  # default
     ).to(device)
     model.train()
     if getattr(args, "compile", False):
@@ -190,7 +176,7 @@ def stats_ms(times_ms):
 
 def emit_row(args, reporter, device: torch.device, mode: str, mean_ms: float, std_ms: float, tok_s: float):
     row = BenchmarkRow(
-        specs="RTX4060",
+        specs="table1",
         model_size=args.model_size,
         batch_size=args.batch_size,
         context_length=args.context_length,
@@ -212,7 +198,7 @@ def emit_row(args, reporter, device: torch.device, mode: str, mean_ms: float, st
 
 
 def run_one_setting(args, reporter, device: torch.device, autocast_ctx):
-    spec = MODEL_SPECS_RTX4060[args.model_size]
+    spec = MODEL_SPECS[args.model_size]
 
     f_times_ms, b_times_ms = run_benchmark_split(args, device, autocast_ctx)
 
@@ -223,7 +209,7 @@ def run_one_setting(args, reporter, device: torch.device, autocast_ctx):
     f_tok_s = tok_per_step / (f_mean / 1e3) if f_mean > 0 else float("inf")
     b_tok_s = tok_per_step / (b_mean / 1e3) if b_mean > 0 else float("inf")
 
-    print(f"[device={device}] specs=RTX4060 amp={args.amp}")
+    print(f"[device={device}] specs=table1 amp={args.amp}")
     print(f"model={args.model_size} B={args.batch_size} S={args.context_length} V={args.vocab_size}")
     print(f"warmup={args.warmup_steps} measure={args.measure_steps}")
     print(f"forward : mean={f_mean:.3f} ms, std={f_std:.3f} ms, tok/s={f_tok_s:.1f}")
@@ -327,7 +313,7 @@ def run_profile_workload(args, device: torch.device, autocast_ctx):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--model-size", choices=list(MODEL_SPECS_RTX4060.keys()), default="small")
+    p.add_argument("--model-size", choices=list(MODEL_SPECS.keys()), default="small")
     p.add_argument("--context-length", type=int, default=128)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--vocab-size", type=int, default=10_000)
@@ -354,7 +340,7 @@ def main():
     # Sweep runner
     p.add_argument("--sweep", action="store_true",
                    help="Run sweep over model sizes and context lengths.")
-    p.add_argument("--sweep-models", type=str, default="small,medium,large,xl,2.7b")
+    p.add_argument("--sweep-models", type=str, default="small,medium")
     p.add_argument("--sweep-contexts", type=str, default="128,256,512,1024")
     
     # NVTX
