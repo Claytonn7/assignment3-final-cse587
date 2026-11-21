@@ -126,8 +126,14 @@ def run_one(
 
         fwd_ms = time_forward(fn, q, k, v, iters)
 
-        # memory snapshot
+        # memory in use right before backward: output + everything autograd saved (incl. seq x seq matrices)
+        cuda_sync()
+        out = fn(q, k, v)
+        cuda_sync()
         mem_before_bwd_mb = torch.cuda.memory_allocated() / (1024 ** 2)
+        out.sum().backward()
+        q.grad = k.grad = v.grad = None
+        del out
 
         bwd_ms = time_backward(fn, q, k, v, iters)
 
