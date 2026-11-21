@@ -98,75 +98,51 @@ def step_backward(model, logits):
     model.zero_grad(set_to_none=True)
     loss.backward()
 
-
-def measure_forward_backward_ms(model, x, device, autocast_ctx, nvtx_enabled: bool = False):
-    """
-    Return (forward_ms, backward_ms) for one step.
-    Uses CUDA events when on GPU, otherwise falls back to timeit.
-    """
-    if device.type == "cuda":
-        # CUDA event timing is more accurate than timeit + sync for segments.
-        start_f = torch.cuda.Event(enable_timing=True)
-        end_f = torch.cuda.Event(enable_timing=True)
-        start_b = torch.cuda.Event(enable_timing=True)
-        end_b = torch.cuda.Event(enable_timing=True)
-
-        start_f.record()
-        with nvtx_range("forward", nvtx_enabled):
-            logits = step_forward(model, x, autocast_ctx)
-        end_f.record()
-
-        start_b.record()
-        with nvtx_range("backward", nvtx_enabled):
-            step_backward(model, logits)
-        end_b.record()
-
-        torch.cuda.synchronize()
-        f_ms = start_f.elapsed_time(end_f)
-        b_ms = start_b.elapsed_time(end_b)
-        return f_ms, b_ms
-
-    # CPU fallback
+def measure_forward_backward_ms(model, x, device, autocast_ctx, nvtx_enabled=False, mode="forward_backward", optimizer=None):
+    """Time one step with timeit + torch.cuda.synchronize(). Returns (forward_ms, backward_ms, optimizer_ms)."""
     t0 = timeit.default_timer()
-    logits = step_forward(model, x, autocast_ctx)
+    with nvtx_range("forward", nvtx_enabled):
+        logits = step_forward(model, x, autocast_ctx)
+    sync_if_cuda(device)
     t1 = timeit.default_timer()
-    step_backward(model, logits)
+    if mode == "forward":
+        return (t1 - t0) * 1e3, 0.0, 0.0
+
+    with nvtx_range("backward", nvtx_enabled):
+        step_backward(model, logits)
+    sync_if_cuda(device)
     t2 = timeit.default_timer()
-    return (t1 - t0) * 1e3, (t2 - t1) * 1e3
+
+    if mode == "train_step":
+        with nvtx_range("optimizer_step", nvtx_enabled):
+            optimizer.step()
+        sync_if_cuda(device)
+    t3 = timeit.default_timer()
+    return (t1 - t0) * 1e3, (t2 - t1) * 1e3, (t3 - t2) * 1e3
 
 
 def run_benchmark_split(args, device, autocast_ctx):
-    """
-    Warmup then measure forward/backward separately.
-    Return:
-      forward_times_ms, backward_times_ms
-    """
     model = make_model(args, device)
     x = make_batch(args, device)
+    optimizer = make_optimizer_from_args(model) if args.mode == "train_step" else None
 
-    with nvtx_range("benchmark", args.nvtx):
-        # Warmup
-        with nvtx_range("warmup", args.nvtx):
-            for _ in range(args.warmup_steps):
-                with nvtx_range("step", args.nvtx):
-                    with nvtx_range("forward_backward_time", args.nvtx):
-                        f_ms, b_ms = measure_forward_backward_ms(model, x, device, autocast_ctx, nvtx_enabled=args.nvtx)
-                # Already synchronized in CUDA path; keep this for safety/CPU
-                sync_if_cuda(device)
+    def step():
+        return measure_forward_backward_ms(model, x, device, autocast_ctx,
+                                           nvtx_enabled=args.nvtx, mode=args.mode, optimizer=optimizer)
 
-        # Measure
-        with nvtx_range("measure", args.nvtx):
-            f_times = []
-            b_times = []
-            for _ in range(args.measure_steps):
-                with nvtx_range("step", args.nvtx):
-                    with nvtx_range("forward_backward_timed", args.nvtx):
-                        f_ms, b_ms = measure_forward_backward_ms(model, x, device, autocast_ctx, nvtx_enabled=args.nvtx)
-                f_times.append(f_ms)
-                b_times.append(b_ms)
+    with nvtx_range("warmup", args.nvtx):
+        for _ in range(args.warmup_steps):
+            step()
 
-            return f_times, b_times
-
+    f_times, b_times, o_times = [], [], []
+    with nvtx_range("measure", args.nvtx):
+        for _ in range(args.measure_steps):
+            with nvtx_range("step", args.nvtx):
+                f_ms, b_ms, o_ms = step()
+            f_times.append(f_ms)
+            b_times.append(b_ms)
+            o_times.append(o_ms)
+    return f_times, b_times, o_times
 
 def stats_ms(times_ms):
     mean = stats.mean(times_ms)
@@ -198,26 +174,23 @@ def emit_row(args, reporter, device: torch.device, mode: str, mean_ms: float, st
 
 
 def run_one_setting(args, reporter, device: torch.device, autocast_ctx):
-    spec = MODEL_SPECS[args.model_size]
-
-    f_times_ms, b_times_ms = run_benchmark_split(args, device, autocast_ctx)
-
-    f_mean, f_std = stats_ms(f_times_ms)
-    b_mean, b_std = stats_ms(b_times_ms)
-
+    f_times, b_times, o_times = run_benchmark_split(args, device, autocast_ctx)
     tok_per_step = args.batch_size * args.context_length
-    f_tok_s = tok_per_step / (f_mean / 1e3) if f_mean > 0 else float("inf")
-    b_tok_s = tok_per_step / (b_mean / 1e3) if b_mean > 0 else float("inf")
 
-    print(f"[device={device}] specs=table1 amp={args.amp}")
-    print(f"model={args.model_size} B={args.batch_size} S={args.context_length} V={args.vocab_size}")
-    print(f"warmup={args.warmup_steps} measure={args.measure_steps}")
-    print(f"forward : mean={f_mean:.3f} ms, std={f_std:.3f} ms, tok/s={f_tok_s:.1f}")
-    print(f"backward: mean={b_mean:.3f} ms, std={b_std:.3f} ms, tok/s={b_tok_s:.1f}")
+    phases = [("forward", f_times)]
+    if args.mode != "forward":
+        phases.append(("backward", b_times))
+    if args.mode == "train_step":
+        phases.append(("optimizer", o_times))
 
-    emit_row(args, reporter, device, "forward", f_mean, f_std, f_tok_s)
-    emit_row(args, reporter, device, "backward", b_mean, b_std, b_tok_s)
-
+    print(f"[device={device}] model={args.model_size} S={args.context_length} B={args.batch_size} "
+          f"amp={args.amp} mode={args.mode} compile={getattr(args, 'compile', False)} "
+          f"warmup={args.warmup_steps} measure={args.measure_steps}")
+    for name, times in phases:
+        mean, std = stats_ms(times)
+        tok_s = tok_per_step / (mean / 1e3) if mean > 0 else float("inf")
+        print(f"  {name:9s}: mean={mean:.3f} ms, std={std:.3f} ms")
+        emit_row(args, reporter, device, name, mean, std, tok_s)
 
 def run_sweep(args, reporter, device: torch.device, autocast_ctx):
     models = [s.strip() for s in args.sweep_models.split(",") if s.strip()]
@@ -317,6 +290,7 @@ def main():
     p.add_argument("--context-length", type=int, default=128)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--vocab-size", type=int, default=10_000)
+    p.add_argument("--mode", choices=["forward", "forward_backward", "train_step"], default="forward_backward")
 
     p.add_argument("--warmup-steps", type=int, default=5)
     p.add_argument("--measure-steps", type=int, default=10)
